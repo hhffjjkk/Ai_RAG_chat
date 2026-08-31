@@ -1,0 +1,26 @@
+# Environment / secrets
+.env
+.env.*
+
+# Source documents and manuals
+doc/
+
+# IDE
+.idea/
+.vscode/
+
+# Runtime data and logs
+logs/
+output/
+volumes/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS / misc
+.DS_Store
+Thumbs.db

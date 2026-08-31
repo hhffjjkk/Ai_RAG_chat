@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG查询监控</title>
+  <style>
+    :root{
+      --bg:#f5f7fb; --card:#fff; --text:#1f2d3d; --muted:#7a869a;
+      --ok:#17b26a; --bad:#f04438; --run:#2e90fa; --border:#e6eaf0;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text)}
+    .wrap{max-width:1200px;margin:24px auto;padding:0 16px}
+    .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+    .title{font-size:20px;font-weight:700}
+    .ctrl{display:flex;gap:8px}
+    input,button{height:36px;border:1px solid var(--border);border-radius:8px;padding:0 10px;background:#fff}
+    button{cursor:pointer}
+    .cards{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:10px;margin-bottom:12px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px}
+    .k{font-size:12px;color:var(--muted)}
+    .v{font-size:20px;font-weight:700;margin-top:4px}
+    .tbl{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:top}
+    th{background:#fafbfe;text-align:left;color:#445}
+    .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;color:#fff}
+    .ok{background:var(--ok)} .bad{background:var(--bad)} .run{background:var(--run)}
+    .muted{color:var(--muted)}
+    .q{max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .sid{max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .row:hover{background:#fafcff}
+    .detail{margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px}
+    .line{margin:6px 0;font-size:13px}
+    .mono{font-family:Consolas,monospace}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">RAG 查询监控</div>
+      <div class="ctrl">
+        <input id="kw" placeholder="按 query/session_id 过滤" />
+        <button id="btnRefresh">刷新</button>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card"><div class="k">总请求</div><div class="v" id="mTotal">0</div></div>
+      <div class="card"><div class="k">成功</div><div class="v" id="mOk">0</div></div>
+      <div class="card"><div class="k">失败</div><div class="v" id="mFail">0</div></div>
+      <div class="card"><div class="k">处理中</div><div class="v" id="mRun">0</div></div>
+      <div class="card"><div class="k">成功率</div><div class="v" id="mSr">0%</div></div>
+      <div class="card"><div class="k">P95延迟(ms)</div><div class="v" id="mP95">0</div></div>
+    </div>
+
+    <div class="tbl">
+      <table>
+        <thead>
+          <tr>
+            <th>状态</th><th>Session</th><th>问题</th><th>延迟(ms)</th>
+            <th>Done/Running</th><th>答案长度</th><th>更新时间</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="detail" id="detail" style="display:none;"></div>
+  </div>
+
+  <script>
+    const API_BASE = `${location.protocol}//${location.host}`;
+    const tbody = document.getElementById('tbody');
+    const kw = document.getElementById('kw');
+    const detail = document.getElementById('detail');
+    const fmt = ts => ts ? new Date(ts * 1000).toLocaleString('zh-CN') : '-';
+    const esc = s => String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+
+    function tag(status){
+      if(status === 'completed') return '<span class="tag ok">completed</span>';
+      if(status === 'failed') return '<span class="tag bad">failed</span>';
+      return '<span class="tag run">processing</span>';
+    }
+
+    function setSummary(s){
+      document.getElementById('mTotal').textContent = s.total ?? 0;
+      document.getElementById('mOk').textContent = s.completed ?? 0;
+      document.getElementById('mFail').textContent = s.failed ?? 0;
+      document.getElementById('mRun').textContent = s.processing ?? 0;
+      document.getElementById('mSr').textContent = `${s.success_rate ?? 0}%`;
+      document.getElementById('mP95').textContent = s.p95_latency_ms ?? 0;
+    }
+
+    async function load(){
+      const res = await fetch(`${API_BASE}/query/monitor/recent?limit=200`);
+      const data = await res.json();
+      setSummary(data.summary || {});
+      const k = (kw.value || '').trim().toLowerCase();
+      const items = (data.items || []).filter(x => {
+        const text = `${x.session_id||''} ${x.query||''}`.toLowerCase();
+        return !k || text.includes(k);
+      });
+
+      tbody.innerHTML = items.map(x => `
+        <tr class="row">
+          <td>${tag(x.status)}</td>
+          <td class="sid mono" title="${esc(x.session_id)}">${esc(x.session_id)}</td>
+          <td class="q" title="${esc(x.query)}">${esc(x.query)}</td>
+          <td>${x.latency_ms ?? '-'}</td>
+          <td>${x.done_count ?? 0} / ${x.running_count ?? 0}</td>
+          <td>${x.answer_len ?? 0}</td>
+          <td class="muted">${fmt(x.updated_at)}</td>
+          <td><button onclick="showDetail('${esc(x.session_id)}')">详情</button></td>
+        </tr>
+      `).join('');
+    }
+
+    async function showDetail(sessionId){
+      const res = await fetch(`${API_BASE}/query/monitor/${sessionId}`);
+      const d = await res.json();
+      detail.style.display = 'block';
+      detail.innerHTML = `
+        <div class="line"><b>Session:</b> <span class="mono">${esc(d.session_id)}</span></div>
+        <div class="line"><b>状态:</b> ${esc(d.status)}</div>
+        <div class="line"><b>问题:</b> ${esc(d.query || '')}</div>
+        <div class="line"><b>延迟:</b> ${d.latency_ms ?? '-'} ms</div>
+        <div class="line"><b>Done:</b> ${esc((d.done_list || []).join(' | '))}</div>
+        <div class="line"><b>Running:</b> ${esc((d.running_list || []).join(' | '))}</div>
+        <div class="line"><b>错误:</b> ${esc(d.error || '')}</div>
+      `;
+    }
+
+    document.getElementById('btnRefresh').addEventListener('click', load);
+    kw.addEventListener('input', load);
+    load();
+    setInterval(load, 3000);
+    window.showDetail = showDetail;
+  </script>
+</body>
+</html>
