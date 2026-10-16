@@ -37,6 +37,22 @@
 
 ---
 
+## 🖼️ 界面预览
+
+### 📄 文件导入页（`:8000/import`）
+
+![文件导入页](screenshots/01-import.png)
+
+### 💬 智能问答页（`:8001/chat.html`）
+
+![智能问答页](screenshots/02-chat.png)
+
+### 📈 检索质量监控页（`:8001/monitor.html`，示意数据）
+
+![检索质量监控页](screenshots/03-monitor.png)
+
+---
+
 ## 🧱 技术栈
 
 | 层次 | 选型 |
