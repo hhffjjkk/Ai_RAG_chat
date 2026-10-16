@@ -21,6 +21,32 @@
             border-radius: 12px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
+        /* 顶部导航：在“文件导入”和“问答”两个页面之间跳转 */
+        .nav-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 14px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #e6e9ef;
+        }
+        .nav-brand {
+            font-weight: 600;
+            color: #2c3e50;
+            font-size: 15px;
+        }
+        .nav-link {
+            text-decoration: none;
+            font-size: 13px;
+            color: #fff;
+            background-color: #3498db;
+            padding: 8px 14px;
+            border-radius: 6px;
+            transition: background-color 0.3s;
+        }
+        .nav-link:hover {
+            background-color: #2980b9;
+        }
         h1 {
             color: #2c3e50;
             text-align: center;
@@ -141,18 +167,83 @@
             margin: 2px 0;
             line-height: 1.4;
         }
+
+        /* 文档版本 / 时效性 元信息表单 */
+        .meta-panel {
+            margin-bottom: 20px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 12px 16px;
+            background-color: #fbfdff;
+        }
+        .meta-panel summary {
+            cursor: pointer;
+            color: #2c3e50;
+            font-weight: 600;
+        }
+        .meta-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px 20px;
+            margin-top: 12px;
+        }
+        .meta-field {
+            display: flex;
+            flex-direction: column;
+            font-size: 13px;
+            color: #57606f;
+        }
+        .meta-field input {
+            margin-top: 6px;
+            padding: 8px 10px;
+            border: 1px solid #dcdde1;
+            border-radius: 6px;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
 
 <div class="container">
+    <div class="nav-bar">
+        <span class="nav-brand">智汇智库知识库</span>
+        <a class="nav-link" id="navQuery" href="#">💬 进入问答</a>
+    </div>
     <h1>📄 知识库文件导入</h1>
     
     <div class="upload-area" id="dropZone" onclick="document.getElementById('fileInput').click()">
         <div class="upload-icon">☁️</div>
-        <p>点击或拖拽文件到此处 (PDF/MD)</p>
-        <input type="file" id="fileInput" class="file-input" multiple accept=".pdf,.md">
+        <p>点击或拖拽文件到此处（PDF / MD / 图片 / Office，单文件 ≤ 200MB、≤ 200 页）</p>
+        <input type="file" id="fileInput" class="file-input" multiple
+               accept=".pdf,.md,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp,.doc,.docx,.ppt,.pptx,.xls,.xlsx">
     </div>
+
+    <!-- 文档版本 / 时效性 元信息（随上传一起提交，可留空） -->
+    <details class="meta-panel" open>
+        <summary>文档版本与时效信息（可选，留空则自动判定）</summary>
+        <div class="meta-grid">
+            <label class="meta-field">
+                <span>文档ID（同一逻辑文档跨版本保持一致）</span>
+                <input type="text" id="metaDocId" placeholder="留空则用文件名归一">
+            </label>
+            <label class="meta-field">
+                <span>版本说明</span>
+                <input type="text" id="metaVersionNote" placeholder="如：2025 年修订版">
+            </label>
+            <label class="meta-field">
+                <span>来源部门</span>
+                <input type="text" id="metaSourceDept" placeholder="如：研发部 / 市场部">
+            </label>
+            <label class="meta-field">
+                <span>生效日期</span>
+                <input type="date" id="metaPublishDate">
+            </label>
+            <label class="meta-field">
+                <span>失效日期（留空=长期有效）</span>
+                <input type="date" id="metaExpireDate">
+            </label>
+        </div>
+    </details>
 
     <div id="fileList" class="file-list">
         <!-- 文件列表将在这里生成 -->
@@ -166,6 +257,11 @@
     
     // 模拟后端API地址
     const API_BASE = 'http://127.0.0.1:8000';
+
+    // 问答服务（查询服务）地址：端口固定为 8001，主机名沿用当前访问主机，便于跨机访问
+    const QUERY_BASE = `http://${location.hostname || '127.0.0.1'}:8001`;
+    // 顶部导航跳转到问答页面
+    document.getElementById('navQuery').href = `${QUERY_BASE}/chat.html`;
 
     dropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -187,8 +283,27 @@
         handleFiles(e.target.files);
     });
 
+    // 与后端保持一致的上限：单文件 ≤200MB；支持类型同 MinerU（PDF/MD/图片/Office）
+    const MAX_FILE_SIZE_MB = 200;
+    const ALLOWED_EXTENSIONS = ['.pdf', '.md', '.png', '.jpg', '.jpeg', '.jp2', '.webp', '.gif', '.bmp',
+        '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx'];
+
     function handleFiles(files) {
-        Array.from(files).forEach(uploadFile);
+        Array.from(files).forEach((file) => {
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            // 1. 类型校验（前端先拦截，后端节点仍会二次校验）
+            if (!ALLOWED_EXTENSIONS.includes(ext)) {
+                alert(`不支持的文件类型：${file.name}，仅支持 PDF/MD、图片与 Office 文档`);
+                return;
+            }
+            // 2. 大小校验（≤200MB）
+            if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+                alert(`文件过大：${file.name}（${(file.size / 1024 / 1024).toFixed(2)}MB），单文件上限 ${MAX_FILE_SIZE_MB}MB`);
+                return;
+            }
+            // 3. 页数上限（≤200页）由后端解析时校验
+            uploadFile(file);
+        });
     }
 
     function updateProgressBar(bar, percentage) {
@@ -231,6 +346,17 @@
         // 构建FormData
         const formData = new FormData();
         formData.append('files', file);
+        // 追加文档版本与时效性元信息（可留空）
+        const metaDocId = document.getElementById('metaDocId').value.trim();
+        const metaVersionNote = document.getElementById('metaVersionNote').value.trim();
+        const metaSourceDept = document.getElementById('metaSourceDept').value.trim();
+        const metaPublishDate = document.getElementById('metaPublishDate').value;
+        const metaExpireDate = document.getElementById('metaExpireDate').value;
+        if (metaDocId) formData.append('doc_id', metaDocId);
+        if (metaVersionNote) formData.append('version_note', metaVersionNote);
+        if (metaSourceDept) formData.append('source_dept', metaSourceDept);
+        if (metaPublishDate) formData.append('publish_date', metaPublishDate);
+        if (metaExpireDate) formData.append('expire_date', metaExpireDate);
 
         try {
             // 1. 上传文件

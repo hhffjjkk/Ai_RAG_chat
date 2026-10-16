@@ -35,6 +35,22 @@ class ImportGraphState(TypedDict):
     chunks: list          # 切片后的文本列表，包含 metadata
     item_name: str        # 识别出的主体名称 (如: "万用表")，用于增强检索
 
+    # --- 版本控制 ---
+    doc_id: str           # 逻辑文档稳定标识（跨版本不变）
+    version: int          # 版本序号（从 1 递增）
+    content_hash: str     # md_content 的 MD5，用于识别重复上传
+    version_note: str     # 版本说明（上传表单填写）
+    is_duplicate: bool    # 是否为"内容未变"的重复上传
+    is_latest: bool       # 是否为文档最新版本
+    archived_chunks_path: str  # 历史版本切片归档路径（可选）
+
+    # --- 时效性 ---
+    publish_date: int     # 生效/发布日期（epoch 秒）
+    expire_date: int      # 失效日期（epoch 秒，0 表示长期有效）
+    date_source: str      # 日期来源 form | regex | llm | fallback
+    timeliness_status: str  # fresh/aging/stale/expired
+    source_dept: str      # 文档来源部门（上传表单原样填写，留空为 ""）
+
     # --- 数据库相关 ---
     embeddings_content: list # 包含向量数据的列表，准备写入 Milvus
 
@@ -59,6 +75,20 @@ graph_default_state: ImportGraphState = {
     "md_content": "",
     "chunks": [],
     "item_name": "",
+    # 版本控制
+    "doc_id": "",
+    "version": 0,
+    "content_hash": "",
+    "version_note": "",
+    "is_duplicate": False,
+    "is_latest": True,
+    "archived_chunks_path": "",
+    # 时效性
+    "publish_date": 0,
+    "expire_date": 0,
+    "date_source": "fallback",
+    "timeliness_status": "fresh",
+    "source_dept": "",
     "embeddings_content": []
 }
 

@@ -73,9 +73,11 @@ def fetch_chunks_by_chunk_ids(
         return []
     if not collection_name:
         return []
-    # 默认返回字段：核心切片标识与内容字段
+    # 默认返回字段：核心切片标识与内容字段（含版本/时效/来源部门，供监控与溯源）
     if output_fields is None:
-        output_fields = ["chunk_id", "content", "title", "parent_title", "item_name"]
+        output_fields = ["chunk_id", "content", "title", "parent_title", "item_name",
+                         "doc_id", "version", "is_latest", "publish_date", "expire_date",
+                         "timeliness_status", "source_dept"]
 
     # 转换ID为INT64类型，分离有效/无效ID
     ok_ids, bad_ids = _coerce_int64_ids(chunk_ids)
@@ -112,6 +114,37 @@ def fetch_chunks_by_chunk_ids(
             logger.error(f"Milvus query方法批量查询chunk_id失败：{str(e)}", exc_info=True)
 
     return results
+
+
+def build_chunk_filter_expr(item_names, now_ts=None):
+    """
+    构建 kb_chunks 检索过滤表达式：主体过滤 + 版本过滤 + 时效过滤。
+    :param item_names: 已确认的主体名称列表
+    :param now_ts: 当前时间戳（epoch 秒），默认取服务端当前时间
+    :return: Milvus filter 表达式字符串
+    说明：过滤项均受开关控制（VERSION_ENABLED / TIMELINESS_ENABLED），
+          关闭开关即退回"仅按 item_name 过滤"的改造前行为（便于回滚）。
+    """
+    from app.utils.escape_milvus_string_utils import escape_milvus_string
+    from app.utils.doc_meta_utils import now_epoch
+    from app.conf.timeliness_config import timeliness_config
+
+    item_name_str = ', '.join(f'"{escape_milvus_string(item)}"' for item in (item_names or []))
+    expr = f"item_name in [{item_name_str}]"
+    # 版本过滤：默认只命中最新版本（方案A下为防御性条件）
+    if timeliness_config.version_enabled:
+        expr += " and is_latest == true"
+    # 时效过滤：默认硬过滤排除已过期内容
+    if (timeliness_config.timeliness_enabled
+            and timeliness_config.timeliness_expired_policy == "exclude"):
+        ts = now_ts or now_epoch()
+        expr += f" and (expire_date == 0 or expire_date >= {ts})"
+    # 生效下界：默认排除"尚未生效"（publish_date > now）的内容，保证只返回当前有效文档
+    if (timeliness_config.timeliness_enabled
+            and timeliness_config.timeliness_effective_filter_enabled):
+        ts = now_ts or now_epoch()
+        expr += f" and (publish_date == 0 or publish_date <= {ts})"
+    return expr
 
 
 def create_hybrid_search_requests(dense_vector, sparse_vector, dense_params=None, sparse_params=None, expr=None,

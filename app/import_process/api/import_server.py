@@ -5,12 +5,14 @@ from typing import List, Dict, Any
 from datetime import datetime
 import uvicorn
 # 第三方库
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from typing import Optional
 # 项目内部工具/配置/客户端
 from app.clients.minio_utils import get_minio_client
 from app.utils.path_util import PROJECT_ROOT
+from app.utils.doc_meta_utils import parse_date_to_epoch
 from app.utils.task_utils import (
     add_running_task,
     add_done_task,
@@ -27,7 +29,7 @@ from app.core.logger import logger  # 项目统一日志工具
 # 标题和描述会在Swagger文档(http://ip:port/docs)中展示
 app = FastAPI(
     title="File Import Service",
-    description="Web service for uploading files to Knowledge Base (PDF/MD → 解析 → 切分 → 向量化 → Milvus入库)"
+    description="Web service for uploading files to Knowledge Base (PDF/MD/图片/Office → 解析 → 切分 → 向量化 → Milvus入库，单文件≤200MB、≤200页)"
 )
 
 # 跨域中间件配置：解决前端调用后端接口的跨域限制
@@ -49,12 +51,14 @@ async  def get_import_page():
 
 # 定义调用import_graph的函数，像之前测试一样执行的图！！
 # local_file_path (str)  task_id  local_dir(str)
-def run_import_graph(task_id: str, local_file_path: str, local_dir: str):
+def run_import_graph(task_id: str, local_file_path: str, local_dir: str,
+                     doc_meta: Optional[Dict[str, Any]] = None):
     """
     开启图的执行和调用
     :param task_id: 每次的标识
     :param local_file_path: 文件的地址
     :param local_dir: 输出文件夹的地址
+    :param doc_meta: 上传表单携带的文档元信息（doc_id/version_note/publish_date/expire_date）
     :return:
     """
     # 本次任务对应的节点状态
@@ -74,6 +78,11 @@ def run_import_graph(task_id: str, local_file_path: str, local_dir: str):
         init_state["task_id"] = task_id
         init_state["local_file_path"] = local_file_path
         init_state["local_dir"] = local_dir
+        # 合并上传表单携带的文档元信息（版本说明 / 生效日期 / 失效日期）
+        if doc_meta:
+            for key, value in doc_meta.items():
+                if value is not None and value != "":
+                    init_state[key] = value
         # 执行我们图
         for event in kb_import_app.stream(init_state):
         # event {节点名 : state}
@@ -96,12 +105,25 @@ def run_import_graph(task_id: str, local_file_path: str, local_dir: str):
 """
 @app.post("/upload")
 async def upload_file(background_tasks: BackgroundTasks,
-                      files: List[UploadFile] = File(...)):
+                      files: List[UploadFile] = File(...),
+                      doc_id: Optional[str] = Form(None),
+                      version_note: Optional[str] = Form(None),
+                      publish_date: Optional[str] = Form(None),
+                      expire_date: Optional[str] = Form(None),
+                      source_dept: Optional[str] = Form(None)):
     #1.用当前日期命名创建文件夹
     today_str = datetime.now().strftime("%Y%m%d")
     base_out_path = PROJECT_ROOT / "output" / today_str
     # 2. 记录下每个文件上传的任务id [taskid,taskid]
     task_ids = []
+    # 2.1 组装上传表单携带的文档元信息（版本说明 / 生效日期 / 失效日期）
+    doc_meta = {
+        "doc_id": (doc_id or "").strip(),
+        "version_note": (version_note or "").strip(),
+        "publish_date": parse_date_to_epoch(publish_date) or 0,
+        "expire_date": parse_date_to_epoch(expire_date) or 0,
+        "source_dept": (source_dept or "").strip(),
+    }
     # 3. 循环处理每个上传的文件（存储到本地） + 进行异步图任务调用
     for file in files:
         task_id = str(uuid.uuid4())
@@ -119,8 +141,8 @@ async def upload_file(background_tasks: BackgroundTasks,
             shutil.copyfileobj(file.file, buffer)
         # 异步执行
         # 参数1： run_import_graph 执行的方法
-        # 参数2： *args  参数列表 task_id, local_file_path, dir_path - 》 run_import_graph
-        background_tasks.add_task(run_import_graph, task_id, str(local_file_path), str(dir_path))
+        # 参数2： *args  参数列表 task_id, local_file_path, dir_path, doc_meta - 》 run_import_graph
+        background_tasks.add_task(run_import_graph, task_id, str(local_file_path), str(dir_path), doc_meta)
         logger.info(f"{task_id}:完成文件上传，并开启了对应的异步任务！！")
         add_done_task(task_id, "upload_file")
     # 4. 最终返回结果即可

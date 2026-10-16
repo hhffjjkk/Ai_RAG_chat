@@ -199,6 +199,33 @@ def step_3_refine_chunks(sections, max_length, min_length):
     return final_sections
 
 
+def step_5_inject_metadata(state, sections):
+    """
+            将版本与时效性元信息注入每个切片（供 Milvus 过滤字段使用）。
+            字段：doc_id / version / is_latest / publish_date / expire_date / timeliness_status
+            :param state:
+            :param sections:
+            :return: 注入后的 sections
+            """
+    doc_id = state.get("doc_id", "") or ""
+    version = int(state.get("version", 0) or 0)
+    is_latest = bool(state.get("is_latest", True))
+    publish_date = int(state.get("publish_date", 0) or 0)
+    expire_date = int(state.get("expire_date", 0) or 0)
+    timeliness_status = state.get("timeliness_status", "fresh") or "fresh"
+    source_dept = state.get("source_dept", "") or ""
+    for section in sections:
+        section["doc_id"] = doc_id
+        section["version"] = version
+        section["is_latest"] = is_latest
+        section["publish_date"] = publish_date
+        section["expire_date"] = expire_date
+        section["timeliness_status"] = timeliness_status
+        section["source_dept"] = source_dept
+    logger.info(f">>> [step_5_inject_metadata]已为 {len(sections)} 个切片注入版本/时效元信息")
+    return sections
+
+
 def step_4_backup_chunks(state, sections):
     """
             将切割完的碎片进行存储！！！
@@ -241,6 +268,8 @@ def node_document_split(state: ImportGraphState) -> ImportGraphState:
             }]
         # 4.细粒度切割（md）大小和重叠合适 -> 大 -》（设置重叠） 小 | | 小 -》 合并大小合适，语义完整的chunks
         sections = step_3_refine_chunks(sections, DEFAULT_MAX_CONTENT_LENGTH, MIN_CONTENT_LENGTH)
+        # 4.1 注入版本与时效性元信息（供 Milvus 标量过滤字段使用）
+        sections = step_5_inject_metadata(state, sections)
         # 5.数据的备份和chunks属性的修改
         state['chunks'] = sections
         # 备份

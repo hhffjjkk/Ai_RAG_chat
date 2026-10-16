@@ -10,6 +10,8 @@ from app.import_process.agent.state import ImportGraphState, create_default_stat
 from app.import_process.agent.nodes.node_entry import node_entry  # 入口节点：初始化参数、校验输入
 from app.import_process.agent.nodes.node_pdf_to_md import node_pdf_to_md  # PDF转MD：解析PDF文件为markdown格式
 from app.import_process.agent.nodes.node_md_img import node_md_img  # MD图片处理：提取/下载markdown中的图片、修复图片路径
+from app.import_process.agent.nodes.node_doc_version import node_doc_version  # 版本控制：doc_id 归一、指纹、版本决策、写注册表
+from app.import_process.agent.nodes.node_timeliness import node_timeliness  # 时效标记：解析生效/失效日期、计算时效状态
 from app.import_process.agent.nodes.node_document_split import node_document_split  # 文档分块：将长文档切分为符合模型要求的小片段
 from app.import_process.agent.nodes.node_item_name_recognition import node_item_name_recognition  # 项目名识别：从分块中提取核心项目名称（业务定制化）
 from app.import_process.agent.nodes.node_bge_embedding import node_bge_embedding  # BGE向量化：将文本分块转换为向量表示（适配Milvus向量库）
@@ -25,6 +27,8 @@ workflow = StateGraph(ImportGraphState)
 workflow.add_node("node_entry", node_entry)
 workflow.add_node("node_pdf_to_md", node_pdf_to_md)
 workflow.add_node("node_md_img", node_md_img)
+workflow.add_node("node_doc_version", node_doc_version)
+workflow.add_node("node_timeliness", node_timeliness)
 workflow.add_node("node_document_split", node_document_split)
 workflow.add_node("node_item_name_recognition", node_item_name_recognition)
 workflow.add_node("node_bge_embedding", node_bge_embedding)
@@ -50,7 +54,25 @@ workflow.add_conditional_edges(
     )
 #5. 定义静态边
 workflow.add_edge("node_pdf_to_md", "node_md_img")
-workflow.add_edge("node_md_img", "node_document_split")
+# md_content 定稿后：先做版本控制，再做时效标记，然后进入切分
+workflow.add_edge("node_md_img", "node_doc_version")
+
+# 条件边：重复上传且策略为 skip 时短路结束（幂等，不产生脏数据）
+def route_doc_version(state: ImportGraphState) -> str:
+    from app.conf.timeliness_config import timeliness_config
+    if state.get("is_duplicate") and timeliness_config.duplicate_policy == "skip":
+        return END
+    return "node_timeliness"
+
+workflow.add_conditional_edges(
+    "node_doc_version",
+    route_doc_version,
+    {
+        "node_timeliness": "node_timeliness",
+        END: END,
+    }
+)
+workflow.add_edge("node_timeliness", "node_document_split")
 workflow.add_edge("node_document_split", "node_item_name_recognition")
 workflow.add_edge("node_item_name_recognition", "node_bge_embedding")
 workflow.add_edge("node_bge_embedding", "node_import_milvus")

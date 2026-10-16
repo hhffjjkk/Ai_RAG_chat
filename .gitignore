@@ -5,6 +5,12 @@
 # Source documents and manuals
 doc/
 
+# Internal docs / generated reports
+docs/
+
+# Personal resume / notes
+简历*.md
+
 # IDE
 .idea/
 .vscode/

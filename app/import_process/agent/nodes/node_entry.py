@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 
+from app.conf.mineru_config import MINERU_ALLOWED_EXTENSIONS
 from app.core.logger import logger
 from app.import_process.agent.state import ImportGraphState
 from app.utils.task_utils import add_running_task, add_done_task
@@ -31,15 +32,18 @@ def node_entry(state: ImportGraphState) -> ImportGraphState:
         logger.error(f"[{function_name}]参数校验失败: local_file_path 为空")
         raise state
 
-    #3.解析文件类型, 修改state local_file_path -》 pdf | md
-    if local_file_path.endswith(".pdf"):
+    #3.解析文件类型, 修改state local_file_path
+    #   - .md            -> is_md_read_enabled，直接进入 md 处理链路
+    #   - pdf/图片/Office -> is_pdf_read_enabled，走 MinerU 转 MD 节点（沿用原 pdf 路径字段）
+    file_ext = Path(local_file_path).suffix.lower()
+    if file_ext in MINERU_ALLOWED_EXTENSIONS:
         state["is_pdf_read_enabled"] = True
         state["pdf_path"] = local_file_path
-    elif local_file_path.endswith(".md"):
+    elif file_ext == ".md":
         state["is_md_read_enabled"] = True
         state["md_path"] = local_file_path
     else:
-        logger.error(f"[{function_name}]参数校验失败: local_file_path 不是 pdf | md 文件")
+        logger.error(f"[{function_name}]参数校验失败: local_file_path 不是 md 或 MinerU 支持的类型 {MINERU_ALLOWED_EXTENSIONS}")
 
     file_title_os = os.path.basename(local_file_path).split(".")[0]
     file_title = Path(local_file_path).stem

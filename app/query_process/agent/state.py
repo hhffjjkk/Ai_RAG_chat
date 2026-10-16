@@ -28,6 +28,10 @@ class QueryGraphState(TypedDict):
     history: list  # 历史对话记录
     is_stream: bool  # 是否流式输出标记
 
+    # 监控辅助
+    query_start_ts: float  # 本次查询开始时间（epoch 秒），用于统计检索延迟
+    latency_ms: int  # 本次查询端到端耗时（毫秒）
+
 
 # ========================
 # 默认状态（全部为空）
@@ -45,7 +49,10 @@ query_graph_default_state: QueryGraphState = {
     "item_names": [],
     "rewritten_query": "",
     "history": [],
-    "is_stream": False
+    "is_stream": False,
+    # 监控辅助
+    "query_start_ts": 0.0,
+    "latency_ms": 0
 }
 
 

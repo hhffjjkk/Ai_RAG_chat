@@ -37,12 +37,12 @@ def step_2_search_embedding_hyde(rewritten_query, hyde_doc, item_names):
     query_str = rewritten_query + hyde_doc
     # 2.拼接查询字符串生成对应向量
     embeddings = generate_embeddings([query_str])
-    # 3.生成查询AnnSearchRequest列表
-    item_name_str = ', '.join(f'"{item}"' for item in item_names)
+    # 3.生成查询AnnSearchRequest列表（含版本+时效过滤）
+    expr = build_chunk_filter_expr(item_names)
     reqs = create_hybrid_search_requests(
         dense_vector=embeddings['dense'][0],
         sparse_vector=embeddings['sparse'][0],
-        expr=f"item_name in [{item_name_str}]"
+        expr=expr
     )
     # 4.进行混合查询处理
     milvus_client = get_milvus_client()
@@ -51,7 +51,9 @@ def step_2_search_embedding_hyde(rewritten_query, hyde_doc, item_names):
         collection_name=milvus_config.chunks_collection,
         reqs=reqs,
         ranker_weights=(0.9, 0.1),
-        output_fields=["item_name", "content", "title", "parent_title", "chunk_id"]
+        output_fields=["item_name", "content", "title", "parent_title", "chunk_id",
+                       "doc_id", "version", "is_latest", "publish_date", "expire_date", "timeliness_status",
+                       "source_dept"]
     )
     # 5.处理返回结果
     #rrf出bug

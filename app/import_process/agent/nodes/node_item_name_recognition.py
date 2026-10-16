@@ -204,10 +204,11 @@ def step_6_save_to_vector_db(file_title, item_name, dense_vector, sparse_vector)
             schema=schema,  # 字段
             index_params=index_params  # 索引
         )
-    # 3. 先删除之前存在的item_name
+    # 3. 先删除之前存在的同名 item_name（幂等去重，修复重复插入导致记录累积的问题）
     milvus_client.load_collection(collection_name=milvus_config.item_name_collection)
-    # milvus_client.delete(collection_name=milvus_config.item_name_collection,
-    #                      filter=f"item_name='{item_name}'")
+    safe_item_name = escape_milvus_string(item_name)
+    milvus_client.delete(collection_name=milvus_config.item_name_collection,
+                         filter=f'item_name=="{safe_item_name}"')
     # 4. 向集合插入最新的item_name数据和对应的向量即可
     item = {
         "file_title": file_title,

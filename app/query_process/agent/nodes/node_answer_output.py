@@ -7,6 +7,9 @@ from app.core.logger import logger
 from app.core.load_prompt import load_prompt
 from app.lm.lm_utils import get_llm_client
 from app.clients.mongo_history_utils import save_chat_message
+from app.conf.timeliness_config import timeliness_config
+from app.utils.doc_meta_utils import epoch_to_date_str, now_epoch
+from app.query_process.agent.quality_hook import record_query_quality
 import re
 
 _IMAGE_BLOCK_MARKER = "【图片】"
@@ -35,6 +38,39 @@ def step_1_check_answer(state):
         return False
 
 
+def step_2b_collect_stale_docs(reranked_docs):
+    """
+    收集"陈旧/过期"资料标题（本地文档）：
+      - 已过失效日期（expire_date>0 且 <= now）
+      - 发布时间距今超过 TIMELINESS_STALE_WARN_DAYS
+    :param reranked_docs:
+    :return: 去重后的标题列表（最多 3 个）
+    """
+    if not timeliness_config.timeliness_enabled:
+        return []
+    now_ts = now_epoch()
+    stale_days = timeliness_config.timeliness_stale_warn_days
+    stale_titles = []
+    seen = set()
+    for doc in reranked_docs:
+        if doc.get("source") != "local":
+            continue
+        publish_date = int(doc.get("publish_date", 0) or 0)
+        expire_date = int(doc.get("expire_date", 0) or 0)
+        is_expired = bool(expire_date and expire_date > 0 and expire_date <= now_ts)
+        is_old = bool(publish_date and (now_ts - publish_date) / 86400.0 >= stale_days)
+        if not (is_expired or is_old):
+            continue
+        title = doc.get("title") or "未命名资料"
+        if title in seen:
+            continue
+        seen.add(title)
+        stale_titles.append(title)
+        if len(stale_titles) >= 3:
+            break
+    return stale_titles
+
+
 def step_2_load_prompt(state):
     """
         加载模型润色答案的提示词！！
@@ -57,7 +93,9 @@ def step_2_load_prompt(state):
         source = doc.get("source")
         title = doc.get("title")
         score = doc.get("score")
-        content = f"[{i}][source={source}][title={title}][score={score}]\n\n{text}"
+        # 标注资料发布日期（供模型判断时效性）
+        publish_str = epoch_to_date_str(doc.get("publish_date", 0))
+        content = f"[{i}][source={source}][title={title}][date={publish_str}][score={score}]\n\n{text}"
         """
                 [{i}][source={source}][title={title}][score={score}]
 
@@ -69,6 +107,12 @@ def step_2_load_prompt(state):
         docs.append(content)
         used_length += len(content)  # 长度累加
     final_context = "\n\n".join(docs)
+    # 1.1 时效提示：标注陈旧/过期资料，引导模型在回答中提示用户
+    stale_titles = step_2b_collect_stale_docs(reranked_docs)
+    if stale_titles:
+        warn_line = ("\n\n【时效提示】以下资料发布时间较早或已过有效期，信息可能已过时："
+                     + "、".join(stale_titles) + "。请在回答中明确提醒用户。")
+        final_context += warn_line
     # 2. 再处理 history -> 聊天记录的内容
     history_str = ""  # 对话记录的内容
     if history and len(history) > 0:
@@ -129,6 +173,31 @@ def step_3_create_answer(state, prompt):
     state['answer'] = answer
     logger.info(f"lm模型最终返回的结果：{answer}")
     return answer
+
+
+def step_3b_append_stale_warning(state):
+    """
+    在最终答案结尾追加固定的时效提示（保证即使模型未提及也能提示用户）。
+    仅当存在陈旧/过期资料且 TIMELINESS_WARN_IN_ANSWER=true 时生效。
+    :param state:
+    :return: 追加的提示文本（未追加则返回 ""）
+    """
+    if not (timeliness_config.timeliness_enabled and timeliness_config.timeliness_warn_in_answer):
+        return ""
+    stale_titles = step_2b_collect_stale_docs(state.get("reranked_docs", []))
+    if not stale_titles:
+        return ""
+    warning = ("\n\n> 温馨提示：以上回答参考的部分资料（" + "、".join(stale_titles)
+               + "）发布时间较早或已接近有效期，实际信息请以最新文档为准。")
+    answer = state.get("answer") or ""
+    answer = answer + warning
+    state["answer"] = answer
+    if state.get("is_stream"):
+        push_to_session(state["session_id"], SSEEvent.DELTA, {"delta": warning})
+    else:
+        set_task_result(state["session_id"], "answer", answer)
+    logger.info(f"已在答案中追加时效提示：{stale_titles}")
+    return warning
 
 
 def step_4_extract_images_url(state):
@@ -217,12 +286,14 @@ def node_answer_output(state):
         prompt = step_2_load_prompt(state)
         # 3. 没有 使用模型润色答案 -》 结果 -> 文本
         answer = step_3_create_answer(state, prompt)
+        # 3.1 追加时效提示（陈旧/过期资料）
+        step_3b_append_stale_warning(state)
         # 4. 没有 提取原来topklist中的图片地址，单独返回【see】
         images_url = step_4_extract_images_url(state)
         if images_url:
             push_to_session(state["session_id"],
                             SSEEvent.FINAL,
-                            {"answer": answer,
+                            {"answer": state.get("answer", answer),
                              "status": "completed",
                              "image_urls": images_url}
                             )
@@ -230,6 +301,8 @@ def node_answer_output(state):
         # 数据都已经推送完毕了
         # 5. 添加聊天记录（mongodb）
     step_5_write_history(state)
+    # 6. 检索质量监控：记录本次检索的 TopK 事实与答案（内联调用，失败不影响主流程）
+    record_query_quality(state)
 
     add_done_task(state['session_id'], sys._getframe().f_code.co_name, state.get("is_stream"))
     print("---node_answer_output 节点处理结束---")

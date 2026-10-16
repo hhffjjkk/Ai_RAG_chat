@@ -6,6 +6,8 @@ import sys
 from app.lm.reranker_utils import get_reranker_model
 from app.core.logger import logger
 from app.utils.task_utils import add_running_task
+from app.conf.timeliness_config import timeliness_config
+from app.utils.doc_meta_utils import compute_timeliness_factor, now_epoch
 
 load_dotenv()
 # -----------------------------
@@ -52,7 +54,14 @@ def step_1_merge_rrf_mcp(state):
             "text": content,
             "title": title,
             "source": "local",
-            "url": ""
+            "url": "",
+            # 版本/时效元信息（用于后续时效衰减与答案日期标注）
+            "doc_id": entity.get("doc_id", ""),
+            "version": entity.get("version", 0),
+            "publish_date": entity.get("publish_date", 0),
+            "expire_date": entity.get("expire_date", 0),
+            "timeliness_status": entity.get("timeliness_status", ""),
+            "source_dept": entity.get("source_dept", ""),
         })
     # 3.2 web   mcp
     for doc in web_search_docs:
@@ -64,7 +73,11 @@ def step_1_merge_rrf_mcp(state):
             "text": text,
             "title": title,
             "source": "web",
-            "url": url
+            "url": url,
+            # web 结果无发布日期，时效衰减因子恒为 1.0
+            "publish_date": 0,
+            "expire_date": 0,
+            "timeliness_status": "",
         })
     logger.info(f"多路数据融合，最终结果为:{chunks_list}")
     return chunks_list
@@ -98,6 +111,41 @@ def step_2_rerank_doc_list(doc_list, state):
 
     logger.info(f"已经完成排序和打分！最终结果为：{doc_list_with_score}")
     return doc_list_with_score
+
+
+def step_2b_apply_timeliness_decay(rerank_score_list, state):
+    """
+    时效衰减重排：对本地文档按发布时间做软降权。
+      factor = clamp(0.5 ** (age_days / half_life_days), min_factor, 1.0)
+      final_score = rerank_score * factor
+    说明：
+      - web 结果无发布日期，factor=1，不受影响
+      - TIMELINESS_ENABLED=false 时直接返回原结果（便于回滚）
+      - 已过期内容在检索阶段已被硬过滤；若为 soft 策略，则在此额外降权
+    :param rerank_score_list: 已按 score 排序的文档列表
+    :return: 重新排序后的文档列表
+    """
+    if not timeliness_config.timeliness_enabled:
+        return rerank_score_list
+    now_ts = now_epoch()
+    for item in rerank_score_list:
+        publish_date = int(item.get("publish_date", 0) or 0)
+        expire_date = int(item.get("expire_date", 0) or 0)
+        factor = compute_timeliness_factor(
+            publish_date=publish_date,
+            now_ts=now_ts,
+            half_life_days=timeliness_config.timeliness_half_life_days,
+            min_factor=timeliness_config.timeliness_min_factor,
+        )
+        # 软策略下，已过期内容额外降权（硬策略不会走到这里）
+        if (timeliness_config.timeliness_expired_policy == "soft"
+                and expire_date and expire_date > 0 and expire_date <= now_ts):
+            factor *= 0.3
+        item["timeliness_factor"] = round(factor, 4)
+        item["score"] = item.get("score", 0.0) * factor
+    rerank_score_list.sort(key=lambda x: x["score"], reverse=True)
+    logger.info("已完成时效衰减重排")
+    return rerank_score_list
 
 
 def step_3_topk_and_gap(rerank_score_list):
@@ -153,6 +201,8 @@ def node_rerank(state):
     doc_list = step_1_merge_rrf_mcp(state)
     # 2. 启用rerank进行精排 （数据和分）
     rerank_score_list = step_2_rerank_doc_list(doc_list,state)
+    # 2.5 时效衰减重排（对陈旧内容软降权，web 结果不受影响）
+    rerank_score_list = step_2b_apply_timeliness_decay(rerank_score_list, state)
     # 3. 启动算法进行放断崖以及topk处理  0.9  0.89  0.35
     final_doc_list = step_3_topk_and_gap(rerank_score_list)
     # 4. 结果装到state中即可

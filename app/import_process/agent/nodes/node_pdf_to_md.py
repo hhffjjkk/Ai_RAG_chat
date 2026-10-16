@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sys
 import time
@@ -7,7 +8,12 @@ from pathlib import Path
 
 import requests
 
-from app.conf.mineru_config import MineruConfig, mineru_config
+from app.conf.mineru_config import (
+    MineruConfig,
+    mineru_config,
+    MINERU_ALLOWED_EXTENSIONS,
+    MINERU_IMAGE_EXTENSIONS,
+)
 from app.core.logger import logger
 from app.import_process.agent.state import ImportGraphState, create_default_state
 from app.utils.path_util import PROJECT_ROOT
@@ -15,6 +21,8 @@ from app.utils.task_utils import add_running_task, add_done_task
 
 """
    node_pdf_to_md 
+     支持类型：PDF / 图片(png,jpg,jpeg,jp2,webp,gif,bmp) / Office(doc,docx,ppt,pptx,xls,xlsx)
+     统一经 MinerU API 转为 Markdown，文件大小上限 200MB、页数上限 200 页
      参数： state [is_pdf_read_enabled = True | pdf_path = xxx.pdf | local_dir = output ]  
      返回： state [md_path = 地址 | md_content = 内容 ]
      1. 日志和任务状态
@@ -49,6 +57,65 @@ from app.utils.task_utils import add_running_task, add_done_task
 
 
 
+def count_pages(path_obj: Path):
+    """
+    统计文件页数（尽力而为，无法判定时返回 None，交由 MinerU 服务端兜底校验）。
+
+    - pdf：使用 PyMuPDF 读取真实页数
+    - 图片：固定 1 页
+    - docx/pptx/xlsx（OOXML 压缩包）：解析内部结构统计页/表/幻灯片数量
+    - doc/ppt/xls（旧版二进制）：本地无法解析，返回 None
+    :param path_obj: 待解析文件路径
+    :return: 页数 int，或 None（无法判定）
+    """
+    ext = path_obj.suffix.lower()
+    if ext == ".pdf":
+        import fitz  # PyMuPDF：仅 PDF 需要，延迟导入避免影响其他类型
+        with fitz.open(path_obj) as doc:
+            return doc.page_count
+    if ext in MINERU_IMAGE_EXTENSIONS:
+        return 1
+    if ext in (".docx", ".pptx", ".xlsx"):
+        try:
+            with zipfile.ZipFile(path_obj) as zf:
+                names = zf.namelist()
+                if ext == ".pptx":
+                    return len([n for n in names if re.match(r"ppt/slides/slide\d+\.xml$", n)])
+                if ext == ".xlsx":
+                    return len([n for n in names if re.match(r"xl/worksheets/sheet\d+\.xml$", n)])
+                # docx：优先读取 Word 记录的分页数（docProps/app.xml 中的 <Pages>）
+                if "docProps/app.xml" in names:
+                    app_xml = zf.read("docProps/app.xml").decode("utf-8", "ignore")
+                    matched = re.search(r"<Pages>(\d+)</Pages>", app_xml)
+                    if matched:
+                        return int(matched.group(1))
+            return None
+        except Exception as e:
+            logger.warning(f"[count_pages]解析 {ext} 页数失败，跳过页数校验: {e}")
+            return None
+    return None
+
+
+def validate_file_limits(path_obj: Path):
+    """
+    校验文件大小与页数是否超过 MinerU 上限（默认 大小 200MB / 页数 200 页）。
+    :param path_obj: 待解析文件路径
+    :return: (file_size_mb, page_count)，page_count 为 None 表示无法判定
+    """
+    # 1. 大小校验（所有类型均校验）
+    max_bytes = mineru_config.max_file_size_mb * 1024 * 1024
+    file_size = path_obj.stat().st_size
+    if file_size > max_bytes:
+        logger.error(f"[validate_file_limits]文件过大: {file_size / 1024 / 1024:.2f}MB > {mineru_config.max_file_size_mb}MB")
+        raise ValueError(f"文件大小 {file_size / 1024 / 1024:.2f}MB 超过上限 {mineru_config.max_file_size_mb}MB")
+    # 2. 页数校验（可判定类型才校验；旧版二进制 Office 无法判定，交由 MinerU 服务端兜底）
+    page_count = count_pages(path_obj)
+    if page_count is not None and page_count > mineru_config.max_pages:
+        logger.error(f"[validate_file_limits]页数超限: {page_count} > {mineru_config.max_pages}")
+        raise ValueError(f"文件页数 {page_count} 超过上限 {mineru_config.max_pages} 页")
+    return round(file_size / 1024 / 1024, 2), page_count
+
+
 def step_1_validate_paths(state):
     """
     步骤1: 参数校验 pdf_path失效则直接异常
@@ -72,6 +139,9 @@ def step_1_validate_paths(state):
     if not pdf_path_obj.exists():
         logger.error(f"[step_1_validate_paths]参数校验失败: pdf_path 文件不存在")
         raise FileNotFoundError("pdf_path 文件不存在")
+    #文件大小(200MB) / 页数(200页) 上限校验，超限直接异常，避免无效提交给 MinerU
+    file_size_mb, page_count = validate_file_limits(pdf_path_obj)
+    logger.info(f"[step_1_validate_paths]类型={pdf_path_obj.suffix.lower()} 大小={file_size_mb}MB 页数={page_count}")
     if not local_dir_obj.exists():
         logger.info(f"[step_1_validate_paths]参数校验成功: local_dir 创建本地目录 {local_dir}")
         local_dir_obj.mkdir(parents=True, exist_ok=True)

@@ -34,6 +34,15 @@
     .detail{margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px}
     .line{margin:6px 0;font-size:13px}
     .mono{font-family:Consolas,monospace}
+    .muted-tag{background:#98a2b3}
+    .topk{margin:8px 0}
+    .fb-box{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .fb-box button.ok{color:#fff} .fb-box button.bad{color:#fff}
+    .fb-box button.ok{background:var(--ok);border-color:var(--ok)}
+    .fb-box button.bad{background:var(--bad);border-color:var(--bad)}
+    .diag{margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px}
+    .diag-card{border:1px solid var(--border);border-radius:8px;padding:10px;margin:8px 0}
+    .diag-card ul{margin:6px 0 0 18px;padding:0}
   </style>
 </head>
 <body>
@@ -41,26 +50,27 @@
     <div class="top">
       <div class="title">RAG 查询监控</div>
       <div class="ctrl">
-        <input id="kw" placeholder="按 query/session_id 过滤" />
+        <input id="kw" placeholder="按 query/session_id/topic 过滤" />
+        <button id="btnDiag">治理诊断</button>
         <button id="btnRefresh">刷新</button>
       </div>
     </div>
 
     <div class="cards">
-      <div class="card"><div class="k">总请求</div><div class="v" id="mTotal">0</div></div>
-      <div class="card"><div class="k">成功</div><div class="v" id="mOk">0</div></div>
-      <div class="card"><div class="k">失败</div><div class="v" id="mFail">0</div></div>
-      <div class="card"><div class="k">处理中</div><div class="v" id="mRun">0</div></div>
-      <div class="card"><div class="k">成功率</div><div class="v" id="mSr">0%</div></div>
-      <div class="card"><div class="k">P95延迟(ms)</div><div class="v" id="mP95">0</div></div>
+      <div class="card"><div class="k">总检索</div><div class="v" id="mTotal">0</div></div>
+      <div class="card"><div class="k">有反馈</div><div class="v" id="mFb">0</div></div>
+      <div class="card"><div class="k">准确率</div><div class="v" id="mAcc">0%</div></div>
+      <div class="card"><div class="k">主题数</div><div class="v" id="mTopics">0</div></div>
+      <div class="card"><div class="k">平均TopK</div><div class="v" id="mTopk">0</div></div>
+      <div class="card"><div class="k">今日检索</div><div class="v" id="mToday">0</div></div>
     </div>
 
     <div class="tbl">
       <table>
         <thead>
           <tr>
-            <th>状态</th><th>Session</th><th>问题</th><th>延迟(ms)</th>
-            <th>Done/Running</th><th>答案长度</th><th>更新时间</th><th>操作</th>
+            <th>反馈</th><th>Session</th><th>问题</th><th>主题</th>
+            <th>TopK数</th><th>来源</th><th>延迟(ms)</th><th>时间</th><th>操作</th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -68,6 +78,7 @@
     </div>
 
     <div class="detail" id="detail" style="display:none;"></div>
+    <div class="diag" id="diag" style="display:none;"></div>
   </div>
 
   <script>
@@ -75,22 +86,24 @@
     const tbody = document.getElementById('tbody');
     const kw = document.getElementById('kw');
     const detail = document.getElementById('detail');
+    const diag = document.getElementById('diag');
     const fmt = ts => ts ? new Date(ts * 1000).toLocaleString('zh-CN') : '-';
     const esc = s => String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+    const pct = x => `${Math.round((x || 0) * 100)}%`;
 
-    function tag(status){
-      if(status === 'completed') return '<span class="tag ok">completed</span>';
-      if(status === 'failed') return '<span class="tag bad">failed</span>';
-      return '<span class="tag run">processing</span>';
+    function fbTag(correct){
+      if(correct === true) return '<span class="tag ok">正确</span>';
+      if(correct === false) return '<span class="tag bad">有误</span>';
+      return '<span class="tag muted-tag">未反馈</span>';
     }
 
     function setSummary(s){
       document.getElementById('mTotal').textContent = s.total ?? 0;
-      document.getElementById('mOk').textContent = s.completed ?? 0;
-      document.getElementById('mFail').textContent = s.failed ?? 0;
-      document.getElementById('mRun').textContent = s.processing ?? 0;
-      document.getElementById('mSr').textContent = `${s.success_rate ?? 0}%`;
-      document.getElementById('mP95').textContent = s.p95_latency_ms ?? 0;
+      document.getElementById('mFb').textContent = s.feedback_count ?? 0;
+      document.getElementById('mAcc').textContent = pct(s.accuracy);
+      document.getElementById('mTopics').textContent = s.topics ?? 0;
+      document.getElementById('mTopk').textContent = s.avg_topk ?? 0;
+      document.getElementById('mToday').textContent = s.today ?? 0;
     }
 
     async function load(){
@@ -99,44 +112,89 @@
       setSummary(data.summary || {});
       const k = (kw.value || '').trim().toLowerCase();
       const items = (data.items || []).filter(x => {
-        const text = `${x.session_id||''} ${x.query||''}`.toLowerCase();
+        const text = `${x.session_id||''} ${x.query||''} ${x.topic||''}`.toLowerCase();
         return !k || text.includes(k);
       });
 
       tbody.innerHTML = items.map(x => `
         <tr class="row">
-          <td>${tag(x.status)}</td>
+          <td>${fbTag(x.correct)}</td>
           <td class="sid mono" title="${esc(x.session_id)}">${esc(x.session_id)}</td>
           <td class="q" title="${esc(x.query)}">${esc(x.query)}</td>
+          <td>${esc(x.topic)}</td>
+          <td>${x.topk_count ?? 0}</td>
+          <td>${esc((x.sources || []).join('/'))}</td>
           <td>${x.latency_ms ?? '-'}</td>
-          <td>${x.done_count ?? 0} / ${x.running_count ?? 0}</td>
-          <td>${x.answer_len ?? 0}</td>
-          <td class="muted">${fmt(x.updated_at)}</td>
+          <td class="muted">${fmt(x.created_at)}</td>
           <td><button onclick="showDetail('${esc(x.session_id)}')">详情</button></td>
         </tr>
-      `).join('');
+      `).join('') || '<tr><td colspan="9" class="muted">暂无检索记录</td></tr>';
     }
 
     async function showDetail(sessionId){
       const res = await fetch(`${API_BASE}/query/monitor/${sessionId}`);
-      const d = await res.json();
       detail.style.display = 'block';
+      if(!res.ok){ detail.innerHTML = '<div class="muted">未找到该会话的检索记录</div>'; return; }
+      const d = await res.json();
+      const L = d.latest || {};
+      const rows = (L.topk || []).map(t => `
+        <tr>
+          <td class="mono">${esc(t.chunk_id)}</td>
+          <td>${esc(t.title)}</td>
+          <td>${esc(t.source)}</td>
+          <td>${Number(t.score || 0).toFixed(4)}</td>
+          <td>v${t.version ?? 0}</td>
+          <td>${esc(t.timeliness_status)}</td>
+          <td>${esc(t.source_dept || '-')}</td>
+        </tr>`).join('');
+      const fb = L.feedback;
       detail.innerHTML = `
-        <div class="line"><b>Session:</b> <span class="mono">${esc(d.session_id)}</span></div>
-        <div class="line"><b>状态:</b> ${esc(d.status)}</div>
-        <div class="line"><b>问题:</b> ${esc(d.query || '')}</div>
-        <div class="line"><b>延迟:</b> ${d.latency_ms ?? '-'} ms</div>
-        <div class="line"><b>Done:</b> ${esc((d.done_list || []).join(' | '))}</div>
-        <div class="line"><b>Running:</b> ${esc((d.running_list || []).join(' | '))}</div>
-        <div class="line"><b>错误:</b> ${esc(d.error || '')}</div>
-      `;
+        <div class="line"><b>Session:</b> <span class="mono">${esc(d.session_id)}</span>　<b>Log:</b> <span class="mono">${esc(L.log_id)}</span></div>
+        <div class="line"><b>问题:</b> ${esc(L.query || '')}</div>
+        <div class="line"><b>主题:</b> ${esc((L.item_names || []).join(', '))}　<b>延迟:</b> ${L.latency_ms ?? '-'} ms　<b>答案长度:</b> ${L.answer_len ?? 0}</div>
+        <div class="line"><b>当前反馈:</b> ${fb ? fbTag(fb.correct) : '<span class="muted">无</span>'} ${esc(fb?.comment || '')}</div>
+        <table class="topk"><thead><tr><th>chunk_id</th><th>标题</th><th>来源</th><th>分数</th><th>版本</th><th>时效</th><th>来源部门</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="7" class="muted">TopK 为空</td></tr>'}</tbody></table>
+        <div class="fb-box">
+          <b>人工反馈：</b>
+          <button class="ok" onclick="submitFeedback('${esc(L.log_id)}', true)">答案正确</button>
+          <button class="bad" onclick="submitFeedback('${esc(L.log_id)}', false)">答案有误</button>
+          <input id="fbComment" placeholder="备注（可选）" />
+        </div>`;
+    }
+
+    async function submitFeedback(logId, correct){
+      const comment = (document.getElementById('fbComment')?.value || '').trim();
+      const res = await fetch(`${API_BASE}/query/feedback`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({log_id: logId, correct, comment})
+      });
+      const d = await res.json();
+      if(d.ok){ alert('反馈已记录'); load(); }
+      else { alert('反馈失败：' + (d.detail || '')); }
+    }
+
+    async function runDiagnose(){
+      const res = await fetch(`${API_BASE}/monitor/diagnose?days=14`);
+      const data = await res.json();
+      diag.style.display = 'block';
+      const cards = (data.topics || []).map(t => `
+        <div class="diag-card">
+          <div class="line"><b>${esc(t.topic)}</b> — <span class="tag ${t.diagnosis === '正常' ? 'ok' : 'bad'}">${esc(t.diagnosis)}</span></div>
+          <div class="line muted">检索 ${t.query_count} 次｜反馈 ${t.sample_count} 条｜准确率 ${pct(t.accuracy)}｜趋势 ${esc(t.trend)}</div>
+          <div class="line muted">平均TopK ${t.avg_topk}｜重复占比 ${pct(t.dup_ratio)}｜陈旧占比 ${pct(t.stale_ratio)}｜来源部门 ${esc((t.source_depts || []).join('/') || '-')}</div>
+          <ul>${(t.recommendations || []).map(r => `<li>${esc(r)}</li>`).join('')}</ul>
+        </div>`).join('');
+      diag.innerHTML = `<div class="line"><b>治理诊断（近 ${data.window_days} 天，共 ${data.topic_count} 个主题；仅给出建议，不自动执行）</b></div>${cards || '<div class="muted">窗口内暂无数据</div>'}`;
     }
 
     document.getElementById('btnRefresh').addEventListener('click', load);
+    document.getElementById('btnDiag').addEventListener('click', runDiagnose);
     kw.addEventListener('input', load);
     load();
-    setInterval(load, 3000);
+    setInterval(load, 5000);
     window.showDetail = showDetail;
+    window.submitFeedback = submitFeedback;
   </script>
 </body>
 </html>

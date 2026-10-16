@@ -9,6 +9,7 @@ from app.clients.milvus_utils import get_milvus_client
 from app.utils.task_utils import add_running_task, add_done_task
 from app.core.logger import logger
 from app.conf.milvus_config import milvus_config
+from app.conf.timeliness_config import timeliness_config
 from app.utils.escape_milvus_string_utils import escape_milvus_string
 
 # 从配置文件读取切片集合名称，与配置解耦，便于环境切换
@@ -41,10 +42,23 @@ def step_2_prepare_collections(state):
         schema.add_field(field_name="title", datatype=DataType.VARCHAR, max_length=65535)
         schema.add_field(field_name="parent_title", datatype=DataType.VARCHAR, max_length=65535)
         schema.add_field(field_name="part", datatype=DataType.INT8)
+        # --- 版本控制 + 时效性 新增标量字段（用于检索期过滤） ---
+        schema.add_field(field_name="doc_id", datatype=DataType.VARCHAR, max_length=65535)
+        schema.add_field(field_name="version", datatype=DataType.INT64)
+        schema.add_field(field_name="is_latest", datatype=DataType.BOOL)
+        schema.add_field(field_name="publish_date", datatype=DataType.INT64)
+        schema.add_field(field_name="expire_date", datatype=DataType.INT64)
+        schema.add_field(field_name="timeliness_status", datatype=DataType.VARCHAR, max_length=64)
+        schema.add_field(field_name="source_dept", datatype=DataType.VARCHAR, max_length=512)
         schema.add_field(field_name="dense_vector", datatype=DataType.FLOAT_VECTOR, dim=1024)
         schema.add_field(field_name="sparse_vector", datatype=DataType.SPARSE_FLOAT_VECTOR)
         # 3.3 查询快，配置索引
         index_params = milvus_client.prepare_index_params()
+
+        # 标量倒排索引：加速 item_name / 版本 / 时效 / 来源部门 的过滤
+        for scalar_field in ("item_name", "doc_id", "is_latest",
+                             "publish_date", "expire_date", "timeliness_status", "source_dept"):
+            index_params.add_index(field_name=scalar_field, index_type="INVERTED")
 
         index_params.add_index(
             field_name="dense_vector",  # 给哪个列创建索引 稠密
@@ -78,15 +92,24 @@ def step_2_prepare_collections(state):
     return milvus_client
 
 
-def step_3_delete_old_data(milvus_client, item_name):
+def step_3_delete_old_data(milvus_client, doc_id):
     """
-        删除旧数据 根据item_name删除
+        删除旧数据：按 doc_id 精确删除（替换原来的按 item_name 删除）。
+        方案A：Milvus 只保留每个逻辑文档的最新版本切片，导入新版本前先精确清理旧切片。
+        方案B：保留全部版本，不做删除（由 is_latest 标记区分）。
         :param milvus_client:
-        :param item_name:
+        :param doc_id: 逻辑文档标识
         :return:
         """
+    if not doc_id:
+        logger.warning("doc_id 为空，跳过旧切片清理（避免误删全库数据）")
+        return
+    if timeliness_config.keep_all_versions_in_milvus:
+        logger.info("KEEP_ALL_VERSIONS_IN_MILVUS=true（方案B），保留历史版本切片，跳过删除")
+        return
+    safe_doc_id = escape_milvus_string(doc_id)
     milvus_client.delete(collection_name=CHUNKS_COLLECTION_NAME,
-                         filter=f"item_name=='{item_name}'")
+                         filter=f'doc_id=="{safe_doc_id}"')
 
     milvus_client.load_collection(collection_name=CHUNKS_COLLECTION_NAME)
 
@@ -124,6 +147,10 @@ def node_import_milvus(state: ImportGraphState) -> ImportGraphState:
     logger.info(f">>> [{function_name}]开始执行了！现在的状态为：{state}")
     add_running_task(state['task_id'], function_name)
     try:
+    # 0. 幂等短路：内容未变且策略为 skip 时，跳过入库
+        if state.get("is_duplicate") and timeliness_config.duplicate_policy == "skip":
+            logger.info(f">>> [{function_name}]检测到重复上传（内容未变），按 DUPLICATE_POLICY=skip 跳过入库")
+            return state
     # 1. 获取输入的数据 （校验）
         chunks = state.get('chunks')
         if not chunks:
@@ -131,8 +158,9 @@ def node_import_milvus(state: ImportGraphState) -> ImportGraphState:
             raise ValueError("chunks没有数据")
     # 2. 没有集合，要创建集合 collection (filed,index,collection)
         milvus_client = step_2_prepare_collections(state)
-    # 3. 删除旧数据
-        step_3_delete_old_data(milvus_client, chunks[0]['item_name'])
+    # 3. 删除旧数据（按 doc_id 精确清理，方案A）
+        doc_id = state.get("doc_id") or chunks[0].get("doc_id")
+        step_3_delete_old_data(milvus_client, doc_id)
     # 4. 插入chunks的数据即可
         with_id_chunks = step_4_insert_collections(milvus_client, chunks)
 

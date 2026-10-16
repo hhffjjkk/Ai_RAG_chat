@@ -29,6 +29,8 @@ _NODE_NAME_TO_CN: Dict[str, str] = {
     "node_entry": "检查文件",
     "node_pdf_to_md": "PDF转Markdown",
     "node_md_img": "Markdown图片处理",
+    "node_doc_version": "文档版本判定",
+    "node_timeliness": "时效性标记",
     "node_item_name_recognition": "主体名称识别",
     "node_document_split": "文档切分",
     "node_bge_embedding": "向量生成",

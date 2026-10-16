@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0" />
-  <title>掌柜智库知识库</title>
+  <title>智汇智库知识库</title>
   <style>
     :root{
       --bg:#f3f5f7;
@@ -93,6 +93,13 @@
       cursor:pointer;
     }
     .btn:disabled{opacity:.6;cursor:not-allowed}
+    /* 顶部导航按钮（用 a 标签实现跨页跳转） */
+    a.btn{
+      text-decoration:none;
+      display:inline-flex;
+      align-items:center;
+      white-space:nowrap;
+    }
 
     .chat{
       flex:1;
@@ -266,7 +273,7 @@
       <div class="brand">
         <div class="logo"></div>
         <div class="title">
-          <strong>掌柜智库知识库</strong>
+          <strong>智汇智库知识库</strong>
           <span id="subTitle">在线 · 可查询知识库与联网信息</span>
         </div>
       </div>
@@ -275,6 +282,7 @@
           <input type="checkbox" id="streamToggle" checked> 流式输出
         </label>
         <span class="pill" id="apiPill">API: 未连接</span>
+        <a class="btn" id="navImport" href="#">📄 文件导入</a>
         <button class="btn" id="btnClear">清空对话</button>
       </div>
     </div>
@@ -282,9 +290,9 @@
     <div class="chat" id="chat">
       <div class="dayline">今天</div>
       <div class="msg bot">
-        <div class="avatar bot">掌柜智库</div>
+        <div class="avatar bot">智汇智库</div>
         <div>
-          <div class="bubble">你好，我是掌柜智库知识库客服。你可以直接提问，我会在“阶段进度”里展示处理过程。</div>
+          <div class="bubble">你好，我是智汇智库知识库客服。你可以直接提问，我会在“阶段进度”里展示处理过程。</div>
           <div class="meta">提示：可以问“如何使用万用表测量电压？”</div>
         </div>
       </div>
@@ -300,6 +308,10 @@
   <script>
     // 默认同源；如你把页面单独打开（file://），可改成 http://127.0.0.1:8001
     const API_BASE = `${location.protocol}//${location.host}`.includes('http') ? `${location.protocol}//${location.host}` : 'http://127.0.0.1:8001';
+    // 文件导入服务地址：端口固定为 8000，主机名沿用当前访问主机，便于跨机访问
+    const IMPORT_BASE = `http://${location.hostname || '127.0.0.1'}:8000`;
+    // 顶部导航跳转到文件导入页面
+    document.getElementById('navImport').href = `${IMPORT_BASE}/import`;
     const chatEl = document.getElementById('chat');
     const inputEl = document.getElementById('input');
     const sendBtn = document.getElementById('send');
@@ -549,7 +561,7 @@
       const id = 'bot-his-' + Math.random().toString(36).slice(2);
       const html = `
         <div class="msg bot" id="${id}">
-          <div class="avatar bot">掌柜智库</div>
+          <div class="avatar bot">智汇智库</div>
           <div>
             <div class="bubble"><div class="answer"></div></div>
             <div class="meta">${formatTime(ts)}</div>
@@ -569,7 +581,7 @@
       const id = 'bot-' + Math.random().toString(36).slice(2);
       const html = `
         <div class="msg bot" id="${id}">
-          <div class="avatar bot">掌柜智库</div>
+          <div class="avatar bot">智汇智库</div>
           <div style="min-width: 180px;">
             <div class="bubble">
               <span class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
