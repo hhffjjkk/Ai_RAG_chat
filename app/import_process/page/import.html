@@ -200,6 +200,91 @@
             border-radius: 6px;
             font-size: 14px;
         }
+
+        /* 已导入文档管理（列表 + 选择删除） */
+        .doc-panel {
+            margin-bottom: 24px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 12px 16px;
+            background-color: #fbfdff;
+        }
+        .doc-panel summary {
+            cursor: pointer;
+            color: #2c3e50;
+            font-weight: 600;
+        }
+        .doc-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 12px 0 8px;
+            font-size: 13px;
+            color: #57606f;
+        }
+        .btn-sm {
+            padding: 7px 12px;
+            font-size: 13px;
+            border-radius: 6px;
+        }
+        .btn-danger {
+            background-color: #e74c3c;
+        }
+        .btn-danger:hover {
+            background-color: #c0392b;
+        }
+        .btn-ghost {
+            background-color: transparent;
+            color: #3498db;
+            border: 1px solid #3498db;
+        }
+        .btn-ghost:hover {
+            background-color: #ecf6fd;
+        }
+        .doc-list {
+            max-height: 320px;
+            overflow-y: auto;
+            border-top: 1px solid #eef1f5;
+        }
+        .doc-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 4px;
+            border-bottom: 1px solid #eef1f5;
+            font-size: 13px;
+        }
+        .doc-row:last-child { border-bottom: none; }
+        .doc-row input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            flex: 0 0 auto;
+        }
+        .doc-info {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-width: 0;
+        }
+        .doc-title {
+            font-weight: 600;
+            color: #333;
+            word-break: break-all;
+        }
+        .doc-meta {
+            color: #7f8c8d;
+            font-size: 12px;
+            margin-top: 3px;
+            word-break: break-all;
+        }
+        .doc-actions {
+            flex: 0 0 auto;
+        }
+        .doc-empty {
+            color: #95a5a6;
+            font-size: 13px;
+            padding: 12px 4px;
+        }
     </style>
 </head>
 <body>
@@ -248,6 +333,21 @@
     <div id="fileList" class="file-list">
         <!-- 文件列表将在这里生成 -->
     </div>
+
+    <!-- 已导入知识库文档管理：列表 + 选择删除 -->
+    <details class="doc-panel" open>
+        <summary>🗂 已导入知识库文档（可勾选后删除）</summary>
+        <div class="doc-toolbar">
+            <span id="docSummary">正在加载文档列表...</span>
+            <span>
+                <button class="btn btn-sm btn-ghost" id="docRefreshBtn" type="button">刷新列表</button>
+                <button class="btn btn-sm btn-danger" id="docDeleteBtn" type="button">删除选中文档</button>
+            </span>
+        </div>
+        <div class="doc-list" id="docList">
+            <div class="doc-empty">加载中...</div>
+        </div>
+    </details>
 </div>
 
 <script>
@@ -255,8 +355,11 @@
     const fileInput = document.getElementById('fileInput');
     const fileList = document.getElementById('fileList');
     
-    // 模拟后端API地址
-    const API_BASE = 'http://127.0.0.1:8000';
+    // 导入服务 API 地址：优先沿用当前页面访问源（页面由导入服务自身提供），
+    // 直接以文件方式打开时回退到默认的 127.0.0.1:8000
+    const API_BASE = (location.origin && location.origin.startsWith('http'))
+        ? location.origin
+        : 'http://127.0.0.1:8000';
 
     // 问答服务（查询服务）地址：端口固定为 8001，主机名沿用当前访问主机，便于跨机访问
     const QUERY_BASE = `http://${location.hostname || '127.0.0.1'}:8001`;
@@ -455,6 +558,8 @@
                     statusBadge.className = 'status-badge status-completed';
                     updateProgressBar(progressBar, 100);
                     clearInterval(interval);
+                    // 导入完成后刷新已导入文档列表
+                    loadDocuments();
                 } else if (data.status === 'processing') {
                     // 保持处理中状态
                     statusBadge.textContent = '处理中...';
@@ -470,6 +575,125 @@
             }
         }, 2000); // 每2秒轮询一次
     }
+
+    // ==================== 已导入文档管理：列表 + 选择删除 ====================
+    const docListEl = document.getElementById('docList');
+    const docSummaryEl = document.getElementById('docSummary');
+    let docItems = [];  // 当前文档列表缓存
+
+    // HTML 转义，避免文档标题中的特殊字符破坏页面结构
+    function escapeHtml(text) {
+        return String(text == null ? '' : text)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // epoch 秒 -> yyyy-MM-dd（0 表示长期有效）
+    function formatDate(epochSeconds) {
+        const ts = Number(epochSeconds) || 0;
+        if (ts <= 0) return '长期有效';
+        const d = new Date(ts * 1000);
+        const pad = (n) => (n < 10 ? '0' + n : '' + n);
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+
+    function renderDocuments(items) {
+        if (!items || items.length === 0) {
+            docListEl.innerHTML = '<div class="doc-empty">知识库中暂无已导入文档</div>';
+            docSummaryEl.textContent = '共 0 篇文档';
+            return;
+        }
+        const rows = items.map((doc) => {
+            const key = escapeHtml(doc.key);
+            const kind = escapeHtml(doc.kind);
+            const version = doc.latest_version ? `v${doc.latest_version}` : '历史文档';
+            const dept = doc.source_dept ? `｜来源：${escapeHtml(doc.source_dept)}` : '';
+            const expire = `｜失效：${escapeHtml(formatDate(doc.expire_date))}`;
+            return `
+                <div class="doc-row" data-kind="${kind}" data-key="${key}">
+                    <input type="checkbox" class="doc-check">
+                    <div class="doc-info">
+                        <span class="doc-title">${escapeHtml(doc.file_title || doc.doc_id || doc.item_name)}</span>
+                        <span class="doc-meta">主体：${escapeHtml(doc.item_name || '未识别')}｜${version}｜切片：${doc.chunk_count}${dept}${expire}</span>
+                    </div>
+                    <div class="doc-actions">
+                        <button class="btn btn-sm btn-danger doc-del-one" type="button">删除</button>
+                    </div>
+                </div>`;
+        });
+        docListEl.innerHTML = rows.join('');
+        docSummaryEl.textContent = `共 ${items.length} 篇文档`;
+    }
+
+    async function loadDocuments() {
+        docSummaryEl.textContent = '正在加载文档列表...';
+        try {
+            const res = await fetch(`${API_BASE}/documents`);
+            const data = await res.json();
+            docItems = data.items || [];
+            renderDocuments(docItems);
+        } catch (e) {
+            console.error('加载文档列表失败', e);
+            docListEl.innerHTML = '<div class="doc-empty">文档列表加载失败，请点击“刷新列表”重试</div>';
+            docSummaryEl.textContent = '加载失败';
+        }
+    }
+
+    async function deleteDocuments(targets) {
+        // targets: [{kind, key}, ...]
+        if (!targets.length) {
+            alert('请先勾选要删除的文档');
+            return;
+        }
+        const names = targets.map((t) => t.key).join('、');
+        if (!confirm(`确认删除以下 ${targets.length} 篇文档？\n${names}\n\n删除后该文档的全部切片与版本记录将被移除，且不可恢复。`)) {
+            return;
+        }
+        let okCount = 0;
+        const failed = [];
+        for (const t of targets) {
+            try {
+                const url = `${API_BASE}/documents?kind=${encodeURIComponent(t.kind)}&key=${encodeURIComponent(t.key)}`;
+                const res = await fetch(url, { method: 'DELETE' });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                okCount += 1;
+            } catch (e) {
+                console.error('删除失败', t, e);
+                failed.push(`${t.key}（${e.message}）`);
+            }
+        }
+        if (failed.length) {
+            alert(`成功删除 ${okCount} 篇，失败 ${failed.length} 篇：\n${failed.join('\n')}`);
+        } else {
+            alert(`已成功删除 ${okCount} 篇文档`);
+        }
+        loadDocuments();
+    }
+
+    // 单篇删除
+    docListEl.addEventListener('click', (e) => {
+        const btn = e.target.closest('.doc-del-one');
+        if (!btn) return;
+        const row = btn.closest('.doc-row');
+        deleteDocuments([{ kind: row.dataset.kind, key: row.dataset.key }]);
+    });
+
+    // 批量删除选中
+    document.getElementById('docDeleteBtn').addEventListener('click', () => {
+        const targets = Array.from(docListEl.querySelectorAll('.doc-row'))
+            .filter((row) => row.querySelector('.doc-check').checked)
+            .map((row) => ({ kind: row.dataset.kind, key: row.dataset.key }));
+        deleteDocuments(targets);
+    });
+
+    // 手动刷新
+    document.getElementById('docRefreshBtn').addEventListener('click', loadDocuments);
+
+    // 页面加载时拉取文档列表
+    loadDocuments();
 </script>
 
 </body>

@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from typing import Optional
 # 项目内部工具/配置/客户端
 from app.clients.minio_utils import get_minio_client
+from app.clients.kb_doc_admin_utils import list_kb_documents, delete_kb_document
 from app.utils.path_util import PROJECT_ROOT
 from app.utils.doc_meta_utils import parse_date_to_epoch
 from app.utils.task_utils import (
@@ -180,6 +181,39 @@ async def get_task_progress(task_id: str):
     logger.info(
         f"[{task_id}] 任务状态查询，当前状态：{task_status_info['status']}，已完成节点：{task_status_info['done_list']}")
     return task_status_info
+
+
+# --------------------------
+# 已导入文档管理：文档列表接口
+# 访问地址：http://localhost:8000/documents （GET请求）
+# --------------------------
+@app.get("/documents", summary="已导入文档列表", description="列出知识库中已导入的文档（含切片数量），供导入页选择删除")
+async def list_documents():
+    items = list_kb_documents()
+    return {
+        "code": 200,
+        "total": len(items),
+        "items": items
+    }
+
+
+# --------------------------
+# 已导入文档管理：删除文档接口（整篇逻辑文档，含全部历史版本）
+# 访问地址：http://localhost:8000/documents?kind=doc_id&key=xxx （DELETE请求）
+# --------------------------
+@app.delete("/documents", summary="删除已导入文档", description="按 doc_id 或 item_name 删除整篇文档：清理 kb_chunks 切片、item_name 目录与版本注册表")
+async def delete_document(kind: str, key: str):
+    try:
+        result = delete_kb_document(kind, key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    logger.info(f"已删除文档：kind={kind}, key={key}, 结果={result}")
+    return {
+        "code": 200,
+        "message": f"文档删除完成：{key}",
+        **result
+    }
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

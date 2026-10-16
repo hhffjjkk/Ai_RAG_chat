@@ -7,6 +7,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from mpmath import limit
 
 from app.conf.milvus_config import milvus_config
+from app.conf.timeliness_config import timeliness_config
 from app.core.load_prompt import load_prompt
 from app.query_process.agent.state import QueryGraphState
 from app.utils.task_utils import add_running_task, add_done_task
@@ -223,6 +224,17 @@ def step_6_deal_list(state,item_results, history_chats,rewritten_query):
         logger.info(f"有可选的item_name:{options_item_names}")
         return state
     # 4. 确认和可选集合都没数据 （处理）
+    #    方案A：未确认到任何商品名时，不再直接返回固定话术，
+    #    在 GENERAL_RETRIEVAL_ENABLED 开启时退化为通用检索（不加 item_name 过滤），
+    #    交由后续 node_search_embedding / hyde 节点用 rewritten_query 直接召回。
+    if timeliness_config.general_retrieval_enabled:
+        state['item_names'] = []
+        state['rewritten_query'] = rewritten_query
+        state['history'] = history_chats
+        if "answer" in state:
+            del state['answer']
+        logger.info("没有匹配的的item_name，按通用检索继续（不加 item_name 过滤）")
+        return state
     answer = "没有匹配的商品名，请重新提问！！"
     state['answer'] = answer
     logger.info(f"没有匹配的的item_name")

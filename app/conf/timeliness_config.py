@@ -50,6 +50,9 @@ class TimelinessConfig:
     timeliness_warn_in_answer: bool  # 是否在答案中追加时效提示
     timeliness_extract_llm_enabled: bool  # 是否启用 LLM 辅助提取文档日期
 
+    # ---- 检索兜底 ----
+    general_retrieval_enabled: bool  # 无商品名(item_name)时是否退化为通用检索（不加 item_name 过滤）
+
 
 timeliness_config = TimelinessConfig(
     version_enabled=_to_bool(os.getenv("VERSION_ENABLED"), True),
@@ -66,4 +69,6 @@ timeliness_config = TimelinessConfig(
     timeliness_stale_warn_days=_to_int(os.getenv("TIMELINESS_STALE_WARN_DAYS"), 730),
     timeliness_warn_in_answer=_to_bool(os.getenv("TIMELINESS_WARN_IN_ANSWER"), True),
     timeliness_extract_llm_enabled=_to_bool(os.getenv("TIMELINESS_EXTRACT_LLM_ENABLED"), False),
+
+    general_retrieval_enabled=_to_bool(os.getenv("GENERAL_RETRIEVAL_ENABLED"), True),
 )

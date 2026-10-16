@@ -168,3 +168,49 @@ def find_doc_ids_by_item_names(item_names: List[str]) -> List[str]:
     except Exception as e:
         logger.error(f"由 item_name 反查 doc_id 失败：{e}")
         return []
+
+
+def list_registry() -> List[Dict[str, Any]]:
+    """列出全部逻辑文档注册表记录（已剔除 MongoDB ObjectId，可直接 JSON 序列化）"""
+    try:
+        tool = get_doc_registry_tool()
+        docs = []
+        for doc in tool.doc_registry.find({}):
+            doc.pop("_id", None)
+            docs.append(doc)
+        return docs
+    except Exception as e:
+        logger.error(f"列出 doc_registry 失败：{e}")
+        return []
+
+
+def delete_registry(doc_id: str = None, item_name: str = None) -> int:
+    """
+    删除注册表记录（按 doc_id 或 item_name 精确匹配，二者至少给一个）。
+    :return: 删除条数
+    """
+    cond = {}
+    if doc_id:
+        cond["doc_id"] = doc_id
+    if item_name:
+        cond["item_name"] = item_name
+    if not cond:
+        return 0
+    try:
+        tool = get_doc_registry_tool()
+        return int(tool.doc_registry.delete_many(cond).deleted_count)
+    except Exception as e:
+        logger.error(f"删除 doc_registry 失败：cond={cond}，{e}")
+        return 0
+
+
+def delete_versions(doc_id: str) -> int:
+    """删除某逻辑文档的全部版本历史记录，返回删除条数"""
+    if not doc_id:
+        return 0
+    try:
+        tool = get_doc_registry_tool()
+        return int(tool.doc_versions.delete_many({"doc_id": doc_id}).deleted_count)
+    except Exception as e:
+        logger.error(f"删除 doc_versions 失败：doc_id={doc_id}，{e}")
+        return 0
